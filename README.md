@@ -16,14 +16,14 @@ BuiltByBit and Polymart.
 <dependency>
   <groupId>com.sunlicense</groupId>
   <artifactId>sunlicense</artifactId>
-  <version>0.0.1</version>
+  <version>0.1.0</version>
 </dependency>
 ```
 
 Gradle:
 
 ```groovy
-implementation 'com.sunlicense:sunlicense:0.0.1'
+implementation 'com.sunlicense:sunlicense:0.1.0'
 ```
 
 ## Usage
@@ -48,6 +48,23 @@ With extra context:
 ```java
 client.validate("LICENCE-KEY-HERE", Map.of("product", "my-plugin", "host", "server-01"));
 ```
+
+## Usage statistics
+
+Every 30 minutes, on a background thread, the client can report anonymous usage statistics (product version,
+OS, architecture, CPU cores, locale, Java version and platform) for your product's **Analytics** tab:
+
+```java
+SunLicenseAnalytics analytics = client.analytics(licenceKey, machineId)
+        .productVersion("2.3.1")
+        .enabled(config.getBoolean("analytics", true))
+        .start();
+// free products, no licence: SunLicense.analytics("pa_…")
+analytics.close(); // on shutdown
+```
+
+It never blocks or fails a validation. Off when your switch says so, with `SUNLICENSE_ANALYTICS=off`, or with
+`-Dsunlicense.analytics=false`. What is sent: https://docs.sunlicense.com/guide/sdks#built-in-analytics
 
 ## Requirements
 

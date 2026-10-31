@@ -36,7 +36,7 @@ import java.util.Objects;
 public final class SunLicense {
 
     /** The version of this client. */
-    public static final String VERSION = "0.0.1";
+    public static final String VERSION = "0.1.0";
 
     private final String baseUrl;
     private final String token;
@@ -105,6 +105,29 @@ public final class SunLicense {
             Thread.currentThread().interrupt();
             throw new SunLicenseException("SunLicense request was interrupted", e);
         }
+    }
+
+    /**
+     * Built-in analytics for this licensed install, with this client's URL and API key: add the product
+     * version and your config's switch, then {@code start()} it (see {@link SunLicenseAnalytics}).
+     *
+     * @param licenseKey the licence key this install validates
+     * @param machineId  the machine id it validates with (the {@code host} you pass to {@link #validate})
+     * @return a builder for the reporter
+     */
+    public SunLicenseAnalytics.Builder analytics(String licenseKey, String machineId) {
+        return SunLicenseAnalytics.builder().baseUrl(baseUrl).apiKey(token).licenseKey(licenseKey).fingerprint(machineId);
+    }
+
+    /**
+     * Starts built-in analytics for a free product, with its public product analytics id (Product → Analytics
+     * in the dashboard). The first report goes 1 to 30 minutes later, then one every 30 minutes.
+     *
+     * @param productAnalyticsId the product's analytics id ({@code pa_…})
+     * @return the running reporter; {@code close()} it on shutdown
+     */
+    public static SunLicenseAnalytics analytics(String productAnalyticsId) {
+        return SunLicenseAnalytics.forProduct(productAnalyticsId);
     }
 
     /** Serialises a flat string map to JSON without pulling in a JSON library. */
