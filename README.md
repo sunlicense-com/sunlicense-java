@@ -66,6 +66,16 @@ analytics.close(); // on shutdown
 It never blocks or fails a validation. Off when your switch says so, with `SUNLICENSE_ANALYTICS=off`, or with
 `-Dsunlicense.analytics=false`. What is sent: https://docs.sunlicense.com/guide/sdks#built-in-analytics
 
+Feature usage and bStats-style custom charts (shown on Lite and Standard plans):
+
+```java
+analytics.feature("auto-sell");
+analytics.simplePie("storage", () -> config.getString("storage"))
+         .singleLine("players", () -> server.getOnlinePlayers().size());
+```
+
+Every chart type: https://docs.sunlicense.com/guide/product-analytics#feature-usage-and-custom-charts
+
 ## Requirements
 
 **Java 11 or newer.** No third-party dependencies — safe to shade into a plugin without

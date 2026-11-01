@@ -25,6 +25,7 @@ import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -53,6 +54,19 @@ import java.util.regex.Pattern;
  *         .productAnalyticsId("pa_7Hk2mQ9xZr4LbN8vT1wYcD").dataDirectory(dataFolder).start();
  * // On shutdown or plugin disable:
  * analytics.close();
+ * }</pre>
+ *
+ * <p>Feature usage and custom charts (bStats' chart types; shown on Lite and Standard plans):
+ *
+ * <pre>{@code
+ * analytics.feature("auto-sell");                                   // each time the feature runs
+ * analytics.simplePie("storage", () -> config.getString("storage"))  // "mysql"
+ *          .singleLine("players", () -> server.getOnlinePlayers().size())
+ *          .advancedPie("hooks", () -> Map.of("vault", 1, "placeholderapi", 1))
+ *          .drilldownPie("java", () -> Map.of("Java 21", Map.of("21.0.4", 1)))
+ *          .multiLine("worlds", () -> Map.of("overworld", 30, "nether", 12))
+ *          .simpleBar("shops", () -> Map.of("sell", 12, "buy", 3))
+ *          .advancedBar("prices", () -> Map.of("diamond", new int[] {120, 95}));
  * }</pre>
  *
  * <p>It never blocks, delays or fails a license check and never throws: errors are swallowed (one debug log
@@ -85,6 +99,13 @@ public final class SunLicenseAnalytics implements AutoCloseable {
     static final Set<String> CORE_KEYS = new HashSet<>(Arrays.asList(
             "schema", "licenseKey", "fingerprint", "productAnalyticsId", "installId", "sdk", "metrics"));
     private static final Pattern INSTALL_ID = Pattern.compile("[A-Za-z0-9_-]{8,64}");
+    /** Feature names and chart ids (spec 185 §4.3), after lower-casing. */
+    private static final Pattern NAME = Pattern.compile("[a-z0-9][a-z0-9._-]{0,47}");
+    static final int MAX_FEATURES = 50;
+    static final int MAX_CHARTS = 30;
+    static final int MAX_ENTRIES = 50;
+    static final int MAX_BAR_NUMBERS = 20;
+    static final long MAX_NUMBER = 1_000_000_000L;
     private static final Set<String> OFF = new HashSet<>(Arrays.asList("off", "false", "0", "no", "disabled"));
     private static final System.Logger LOG = System.getLogger("com.sunlicense.analytics");
 
@@ -137,6 +158,10 @@ public final class SunLicenseAnalytics implements AutoCloseable {
     private final Random random;
     private final Duration firstDelay;
     private final List<Section> sections = new CopyOnWriteArrayList<>();
+    /** Uses per feature since the last accepted report. */
+    private final Map<String, Long> features = new ConcurrentHashMap<>();
+    /** Custom charts by id, in the order they were added. */
+    private final Map<String, Chart> charts = new LinkedHashMap<>();
 
     private volatile boolean closed;
     private ScheduledExecutorService scheduler;
@@ -159,6 +184,7 @@ public final class SunLicenseAnalytics implements AutoCloseable {
         this.transport = b.transport != null ? b.transport : new HttpTransport();
         this.random = b.random;
         this.firstDelay = b.firstDelay;
+        this.sections.add(new Custom());
     }
 
     public static Builder builder() {
@@ -192,6 +218,215 @@ public final class SunLicenseAnalytics implements AutoCloseable {
      */
     public int sendNow() {
         return send().status;
+    }
+
+    // ---- feature usage and custom charts (spec 185 §4.5, §4.6, §13) ----
+
+    /** Counts one use of a feature (e.g. {@code "auto-sell"}); call it each time the feature runs. Cheap, never throws. */
+    public void feature(String name) {
+        feature(name, 1);
+    }
+
+    /**
+     * Counts {@code uses} uses of a feature. Names are lower-cased and must be 1–48 letters, digits, {@code . _ -}
+     * (starting with a letter or digit); others are ignored. Counts go with the next report and are kept until one is
+     * accepted. At most 50 different features per report.
+     */
+    public void feature(String name, int uses) {
+        String n = name(name);
+        if (n == null || uses < 1 || closed || (!features.containsKey(n) && features.size() >= MAX_FEATURES)) {
+            return;
+        }
+        features.merge(n, (long) uses, (a, b) -> Math.min(MAX_NUMBER, a + b));
+    }
+
+    /** A pie of one value per install, e.g. {@code simplePie("storage", () -> "mysql")}. */
+    public SunLicenseAnalytics simplePie(String id, Supplier<String> value) {
+        return chart(id, "simple_pie", value, v -> {
+            String s = clean(v, 64);
+            return s == null ? null : single("value", s);
+        });
+    }
+
+    /** A pie of several weighted values per install, e.g. {@code {"mysql": 2, "sqlite": 1}} (weights ≥ 1). */
+    public SunLicenseAnalytics advancedPie(String id, Supplier<Map<String, Integer>> values) {
+        return chart(id, "advanced_pie", values, v -> values(numbers(v, 1)));
+    }
+
+    /** A pie with a second level, e.g. {@code {"Java 21": {"21.0.4": 1}}}: shows the outer values, then each one's inner values. */
+    public SunLicenseAnalytics drilldownPie(String id, Supplier<Map<String, Map<String, Integer>>> values) {
+        return chart(id, "drilldown_pie", values, v -> {
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<String, Map<String, Integer>> e : v.entrySet()) {
+                String key = clean(e.getKey(), 64);
+                Map<String, Object> inner = e.getValue() == null ? null : numbers(e.getValue(), 1);
+                if (key != null && inner != null && !inner.isEmpty() && out.size() < MAX_ENTRIES) {
+                    out.put(key, inner);
+                }
+            }
+            return values(out);
+        });
+    }
+
+    /** A line of one number per install, summed over installs, e.g. {@code singleLine("players", () -> online)}. */
+    public SunLicenseAnalytics singleLine(String id, Supplier<Integer> value) {
+        return chart(id, "single_line", value, v -> Math.abs((long) v) > MAX_NUMBER ? null : single("value", v));
+    }
+
+    /** Several lines, one number per key per install, e.g. {@code {"overworld": 30, "nether": 12}}. */
+    public SunLicenseAnalytics multiLine(String id, Supplier<Map<String, Integer>> values) {
+        return chart(id, "multi_line", values, v -> values(numbers(v, -MAX_NUMBER)));
+    }
+
+    /** Bars, one number per key per install. */
+    public SunLicenseAnalytics simpleBar(String id, Supplier<Map<String, Integer>> values) {
+        return chart(id, "simple_bar", values, v -> values(numbers(v, -MAX_NUMBER)));
+    }
+
+    /** Groups of bars, up to 20 numbers per key per install, e.g. {@code {"diamond": new int[] {120, 95}}}. */
+    public SunLicenseAnalytics advancedBar(String id, Supplier<Map<String, int[]>> values) {
+        return chart(id, "advanced_bar", values, v -> {
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<String, int[]> e : v.entrySet()) {
+                String key = clean(e.getKey(), 64);
+                if (key == null || e.getValue() == null || out.size() >= MAX_ENTRIES) {
+                    continue;
+                }
+                List<Integer> numbers = new ArrayList<>();
+                for (int n : e.getValue()) {
+                    if (numbers.size() >= MAX_BAR_NUMBERS || Math.abs((long) n) > MAX_NUMBER) {
+                        break;
+                    }
+                    numbers.add(n);
+                }
+                if (!numbers.isEmpty()) {
+                    out.put(key, numbers);
+                }
+            }
+            return values(out);
+        });
+    }
+
+    /** Stops sending a custom chart. */
+    public SunLicenseAnalytics removeChart(String id) {
+        String n = name(id);
+        if (n != null) {
+            synchronized (charts) {
+                charts.remove(n);
+            }
+        }
+        return this;
+    }
+
+    /** One custom chart: its type and how to turn the callback's answer into the report's {@code data} (null = leave out). */
+    private static final class Chart {
+        final String type;
+        final Supplier<Map<String, Object>> data;
+
+        Chart(String type, Supplier<Map<String, Object>> data) {
+            this.type = type;
+            this.data = data;
+        }
+    }
+
+    private <T> SunLicenseAnalytics chart(String id, String type, Supplier<T> callback, Function<T, Map<String, Object>> data) {
+        String n = name(id);
+        if (n == null || callback == null) {
+            outcome("bad-chart", "chart id \"" + id + "\" isn't 1-48 letters, digits, '.', '_' or '-': ignored");
+            return this;
+        }
+        synchronized (charts) {
+            charts.remove(n);   // the same id again replaces it, at the end
+            charts.put(n, new Chart(type, () -> {
+                T v = callback.get();
+                return v == null ? null : data.apply(v);
+            }));
+        }
+        return this;
+    }
+
+    private static Map<String, Object> single(String key, Object value) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put(key, value);
+        return m;
+    }
+
+    private static Map<String, Object> values(Map<String, Object> values) {
+        return values == null || values.isEmpty() ? null : single("values", values);
+    }
+
+    /** Up to 50 entries with clean keys and numbers from {@code min} to 10⁹. */
+    private static Map<String, Object> numbers(Map<String, Integer> in, long min) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Integer> e : in.entrySet()) {
+            String key = clean(e.getKey(), 64);
+            Integer v = e.getValue();
+            if (key != null && v != null && v >= min && v <= MAX_NUMBER && out.size() < MAX_ENTRIES) {
+                out.put(key, v);
+            }
+        }
+        return out;
+    }
+
+    static String name(String raw) {
+        String s = raw == null ? null : raw.trim().toLowerCase(Locale.ROOT);
+        return s != null && NAME.matcher(s).matches() ? s : null;
+    }
+
+    /** Adds features and charts to each report; feature counts sent in an accepted report are taken off. */
+    private final class Custom implements Section {
+        private Map<String, Long> pending = new LinkedHashMap<>();
+        private Map<String, Object> report;
+
+        @Override
+        public void write(Map<String, Object> r) {
+            report = r;
+            pending = new LinkedHashMap<>();
+            for (Map.Entry<String, Long> e : features.entrySet()) {
+                if (pending.size() >= MAX_FEATURES) {
+                    break;
+                }
+                pending.put(e.getKey(), e.getValue());
+            }
+            if (!pending.isEmpty()) {
+                r.put("features", new LinkedHashMap<>(pending));
+            }
+            List<Map.Entry<String, Chart>> list;
+            synchronized (charts) {
+                list = new ArrayList<>(charts.entrySet());
+            }
+            List<Object> out = new ArrayList<>();
+            for (Map.Entry<String, Chart> e : list) {
+                if (out.size() >= MAX_CHARTS) {
+                    break;
+                }
+                Map<String, Object> data;
+                try {
+                    data = e.getValue().data.get();
+                } catch (RuntimeException ex) {
+                    continue;   // a broken callback leaves its chart out
+                }
+                if (data != null) {
+                    Map<String, Object> c = new LinkedHashMap<>();
+                    c.put("id", e.getKey());
+                    c.put("type", e.getValue().type);
+                    c.put("data", data);
+                    out.add(c);
+                }
+            }
+            if (!out.isEmpty()) {
+                r.put("charts", out);
+            }
+        }
+
+        @Override
+        public void sent(boolean accepted) {
+            if (accepted && report != null && report.containsKey("features")) {
+                pending.forEach((name, uses) -> features.computeIfPresent(name, (k, v) -> v - uses <= 0 ? null : v - uses));
+            }
+            pending = new LinkedHashMap<>();
+            report = null;
+        }
     }
 
     void add(Section section) {
@@ -269,6 +504,7 @@ public final class SunLicenseAnalytics implements AutoCloseable {
             return new Answer(0, null);
         }
         if (optedOut()) {
+            features.clear();   // nothing is counted while it's off
             outcome("off", "analytics is switched off; nothing sent");
             return new Answer(0, null);
         }
@@ -278,6 +514,9 @@ public final class SunLicenseAnalytics implements AutoCloseable {
             return new Answer(0, null);
         }
         byte[] body = json(report).getBytes(StandardCharsets.UTF_8);
+        if (body.length > MAX_BODY && report.remove("charts") != null) {   // charts go first, then features
+            body = json(report).getBytes(StandardCharsets.UTF_8);
+        }
         if (body.length > MAX_BODY) {
             report.keySet().retainAll(CORE_KEYS);
             body = json(report).getBytes(StandardCharsets.UTF_8);
