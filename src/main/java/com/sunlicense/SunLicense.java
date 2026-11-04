@@ -36,17 +36,20 @@ import java.util.Objects;
 public final class SunLicense {
 
     /** The version of this client. */
-    public static final String VERSION = "0.1.0";
+    public static final String VERSION = "0.2.0";
 
     private final String baseUrl;
     private final String token;
     private final HttpClient httpClient;
     private final Duration timeout;
+    private final SunLicenseProtection protection;
 
     private SunLicense(Builder builder) {
         this.baseUrl = builder.baseUrl;
         this.token = builder.token;
         this.timeout = builder.timeout;
+        this.protection = builder.protection == null ? null
+                : builder.protection.baseUrl(builder.baseUrl).apiKey(builder.token).build();
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(builder.timeout)
                 .build();
@@ -82,6 +85,17 @@ public final class SunLicense {
         Map<String, String> payload = new LinkedHashMap<>();
         payload.put("license", licenseKey);
         payload.putAll(context);
+        if (protection != null) {
+            // The same fields the server reads the machine from (fingerprint, hwid, host, macAddress).
+            String machine = null;
+            for (String k : new String[] {"fingerprint", "hwid", "host", "macAddress"}) {
+                if (machine == null && context.get(k) != null && !context.get(k).isBlank()) {
+                    machine = context.get(k);
+                }
+            }
+            protection.license(licenseKey, machine);
+            payload.putAll(protection.validateFields());
+        }
 
         HttpRequest.Builder request = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/api/v2/license/validate"))
@@ -98,6 +112,10 @@ public final class SunLicense {
             HttpResponse<String> response =
                     httpClient.send(request.build(), HttpResponse.BodyHandlers.ofString());
             boolean ok = response.statusCode() >= 200 && response.statusCode() < 300;
+            if (protection != null && (response.statusCode() == 200 || response.statusCode() == 400)) {
+                // A definite answer: keep (and cache) or forget the unlock. An outage changes nothing.
+                protection.accept(response.body());
+            }
             return new Result(ok, response.statusCode(), response.body());
         } catch (java.io.IOException e) {
             throw new SunLicenseException("SunLicense request failed", e);
@@ -105,6 +123,18 @@ public final class SunLicense {
             Thread.currentThread().interrupt();
             throw new SunLicenseException("SunLicense request was interrupted", e);
         }
+    }
+
+    /**
+     * Core unlock, tamper reports, the ownership notice and protected files for this client, when the builder
+     * set {@link Builder#protection(SunLicenseProtection.Builder)}; {@code null} otherwise. Every
+     * {@link #validate} feeds it: a valid answer's unlock is kept (and cached for 7 days on this machine), a
+     * rejection forgets it, and an integrity result is sent with the next check.
+     *
+     * @return the protection bound to this client, or {@code null}
+     */
+    public SunLicenseProtection protection() {
+        return protection;
     }
 
     /**
@@ -221,6 +251,7 @@ public final class SunLicense {
 
     /** Builds {@link SunLicense} instances. */
     public static final class Builder {
+        private SunLicenseProtection.Builder protection;
 
         /** Creates a builder with default settings. */
         public Builder() {
@@ -270,6 +301,18 @@ public final class SunLicense {
          * @return a new client
          * @throws IllegalStateException if {@code baseUrl} was never set
          */
+        /**
+         * Turns on core unlock, tamper reports, the ownership notice and protected files
+         * (https://docs.sunlicense.com/guide/protection). This client's URL and API key are filled in.
+         *
+         * @param protection a {@link SunLicenseProtection#builder()} with at least the product code for protected files
+         * @return this builder
+         */
+        public Builder protection(SunLicenseProtection.Builder protection) {
+            this.protection = protection;
+            return this;
+        }
+
         public SunLicense build() {
             if (baseUrl == null || baseUrl.isEmpty()) {
                 throw new IllegalStateException("baseUrl is required");
