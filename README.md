@@ -16,14 +16,14 @@ BuiltByBit and Polymart.
 <dependency>
   <groupId>com.sunlicense</groupId>
   <artifactId>sunlicense</artifactId>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
 </dependency>
 ```
 
 Gradle:
 
 ```groovy
-implementation 'com.sunlicense:sunlicense:0.1.0'
+implementation 'com.sunlicense:sunlicense:0.2.0'
 ```
 
 ## Usage
@@ -75,6 +75,28 @@ analytics.simplePie("storage", () -> config.getString("storage"))
 ```
 
 Every chart type: https://docs.sunlicense.com/guide/product-analytics#feature-usage-and-custom-charts
+
+## Protection
+
+Core unlock, tamper reports, the ownership notice and protected files
+([guide](https://docs.sunlicense.com/guide/protection)). Seal part of your app at build time with the CLI
+(`sunlicense seal <file> --product <code> --digest '**/*.class'`); it only opens after a valid license check,
+so there's no check to delete. The unlock is cached for 7 days on the machine (outages) and comes with offline
+`.lic` files too.
+
+```java
+SunLicense client = new SunLicense.Builder()
+        .token(System.getenv("SUNLICENSE_API_KEY"))
+        .protection(SunLicenseProtection.builder().productCode("myplugin").product("My Plugin", "Acme Studios"))
+        .build();
+SunLicenseProtection protection = client.protection();
+
+client.validate(licenseKey, Map.of("host", machineId));   // a valid answer carries the unlock
+byte[] core = protection.unseal(SEALED_CORE);                // throws SunLicenseProtection.Locked without one
+protection.integrity(SunLicenseProtection.codeSource(Main.class)); // OK or MODIFIED, sent with the next check
+log.info(protection.notice());                               // product, owner, masked key
+byte[] rules = protection.protectedFile("rules.dat");        // Standard: files only valid licenses download
+```
 
 ## Requirements
 
