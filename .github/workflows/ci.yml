@@ -15,8 +15,8 @@ jobs:
         # only has from Java 15: on 11-14 they are rejected (fail closed). Tests run where they all pass.
         java: ["17", "21"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: ${{ matrix.java }}
