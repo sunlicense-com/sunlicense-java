@@ -19,4 +19,5 @@ jobs:
           distribution: temurin
           java-version: ${{ matrix.java }}
           cache: maven
-      - run: mvn -B -ntp verify
+      # Release signing needs the maintainer key; CI only builds and tests.
+      - run: mvn -B -ntp verify -Dgpg.skip
