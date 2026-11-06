@@ -1,0 +1,25 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        # The jar targets Java 11 (maven.compiler.release), but offline license files use Ed25519, which the JDK
+        # only has from Java 15: on 11-14 they are rejected (fail closed). Tests run where they all pass.
+        java: ["17", "21"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+      # Release signing needs the maintainer key; CI only builds and tests.
+      - run: mvn -B -ntp verify -Dgpg.skip
