@@ -1,5 +1,7 @@
 # SunLicense — Java Client
 
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16450/badge)](https://www.bestpractices.dev/projects/16450)
+
 Official Java client for [SunLicense](https://sunlicense.com), a licence management and
 anti-piracy system for indie software developers.
 
