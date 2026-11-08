@@ -13,7 +13,7 @@ Security fixes go into the latest release of the `com.sunlicense:sunlicense` art
 
 Please **don't open a public issue** for a security problem.
 
-Email **hello@sundevs.com** with "Security" in the subject, or use GitHub's private
+Email **hello@sundevs.net** with "Security" in the subject, or use GitHub's private
 [vulnerability reporting](../../security/advisories/new) for this repository. Include the SDK version, what you found,
 steps to reproduce and the impact.
 
